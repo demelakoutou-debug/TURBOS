@@ -44,7 +44,7 @@
     </div>
 
     <div id="trading-panel" class="panel-trading" style="display: none;">
-        <h3>Configuration Turbos (Barrières Officielles Server)</h3>
+        <h3>Configuration Turbos (Flux Serveur Réel)</h3>
         
         <div class="form-group">
             <label for="account-select">Sélection du Compte (Nomenclature DOT / ROT)</label>
@@ -69,20 +69,13 @@
         </div>
 
         <div class="form-group">
-            <label>Barrières actuellement disponibles sur le serveur :</label>
-            <div id="available-barriers" style="font-size: 13px; color: #ffea00; background: #111; padding: 8px; border-radius: 4px; border: 1px solid #333;">
-                Récupération des barrières système...
-            </div>
-        </div>
-
-        <div class="form-group">
             <label for="trade-stake">Stake ($)</label>
             <input type="number" id="trade-stake" value="1.00" step="0.5" min="0.35">
         </div>
 
         <div class="trade-actions">
-            <button id="btn-long" class="btn-trade btn-long">▲ Turbo Long</button>
-            <button id="btn-short" class="btn-trade btn-short">▼ Turbo Short</button>
+            <button id="btn-long" class="btn-trade btn-long">▲ TURBOLONG</button>
+            <button id="btn-short" class="btn-trade btn-short">▼ TURBOSHORT</button>
         </div>
     </div>
 
@@ -99,7 +92,6 @@
     const tradingPanel = document.getElementById('trading-panel');
     const accountSelect = document.getElementById('account-select');
     const marketSelect = document.getElementById('market-select');
-    const barrierDisplay = document.getElementById('available-barriers');
     const stakeInput = document.getElementById('trade-stake');
     const btnLong = document.getElementById('btn-long');
     const btnShort = document.getElementById('btn-short');
@@ -110,23 +102,21 @@
     let accessToken = null;
     let currentSymbol = '1HZ25V';
     
-    // Stockage des listes de barrières renvoyées par Deriv
+    // Listes officielles reçues dynamiquement depuis le serveur de Deriv
     let serverLongBarriers = [];
     let serverShortBarriers = [];
 
     function log(msg, color = '#0f0') {
         const time = new Date().toLocaleTimeString();
         logBox.innerHTML += `<div style="color: ${color}">[${time}] ${msg}</div>`;
-        logBox.scrollHeight;
+        logBox.scrollTop = logBox.scrollHeight;
     }
 
-    // --- OUTILS SÉCURITÉ PKCE ---
+    // --- SÉCURITÉ PKCE ---
     function generateRandomString(length) {
         const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
         let text = '';
-        for (let i = 0; i < length; i++) {
-            text += possible.charAt(Math.floor(Math.random() * possible.length));
-        }
+        for (let i = 0; i < length; i++) { text += possible.charAt(Math.floor(Math.random() * possible.length)); }
         return text;
     }
 
@@ -147,15 +137,7 @@
         sessionStorage.setItem('oauth_verifier', codeVerifier);
 
         const scope = 'trade';
-        const oauthUrl = `https://auth.deriv.com/oauth2/auth` + 
-                         `?response_type=code` +
-                         `&client_id=${CLIENT_ID}` +
-                         `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
-                         `&scope=${scope}` +
-                         `&state=${state}` +
-                         `&code_challenge=${codeChallenge}` +
-                         `&code_challenge_method=S256`;
-
+        const oauthUrl = `https://auth.deriv.com/oauth2/auth?response_type=code&client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=${scope}&state=${state}&code_challenge=${codeChallenge}&code_challenge_method=S256`;
         window.location.href = oauthUrl;
     });
 
@@ -165,15 +147,12 @@
         window.location.href = REDIRECT_URI;
     });
 
-    // --- INTERFACE REST v2 COMPTES ---
+    // --- RÉCUPÉRATION DES COMPTES TRADING (REST) ---
     async function fetchDerivAccounts() {
         try {
             const response = await fetch('https://api.derivws.com/trading/v1/options/accounts', {
                 method: 'GET',
-                headers: {
-                    'Authorization': `Bearer ${accessToken}`,
-                    'Deriv-App-ID': CLIENT_ID
-                }
+                headers: { 'Authorization': `Bearer ${accessToken}`, 'Deriv-App-ID': CLIENT_ID }
             });
             if (!response.ok) throw new Error(`Erreur HTTP : ${response.status}`);
             const json = await response.json();
@@ -211,7 +190,7 @@
         } catch(e) { console.error(e); }
     }
 
-    // --- OTP v2 & LIVE WEBSOCKET ---
+    // --- INITIALISATION SESSION WEBSOCKET VIA OTP ---
     async function switchAccountSession(accountId) {
         if (ws) ws.close();
         log(`Connexion au compte ${accountId}...`, "#ffea00");
@@ -221,7 +200,7 @@
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${accessToken}`, 'Deriv-App-ID': CLIENT_ID }
             });
-            if (!response.ok) throw new Error("Erreur de rafraîchissement Session");
+            if (!response.ok) throw new Error("Erreur rafraîchissement Session");
             const otpData = await response.json();
             const wsUrl = otpData.data?.url; 
 
@@ -239,28 +218,26 @@
             statusEl.innerText = "En ligne (Sécurisé)";
             currentSymbol = marketSelect.value;
             
-            // 1. S'abonner aux Ticks de prix
+            // Souscrire au flux de prix continu
             ws.send(JSON.stringify({ ticks: currentSymbol }));
             
-            // 2. Demander immédiatement les barrières valides au serveur pour ce marché
+            // Demander immédiatement la liste des contrats et barrières valides
             requestServerBarriers();
         };
 
         ws.onmessage = (event) => {
             const data = JSON.parse(event.data);
 
-            // Réception du flux de ticks
             if (data.msg_type === 'tick' && data.tick && data.tick.symbol === currentSymbol) {
-                if (Math.random() > 0.9) { 
-                    log(`[${marketSelect.options[marketSelect.selectedIndex].text}] Prix : ${data.tick.quote}`, "#fff");
+                if (Math.random() > 0.92) { 
+                    log(`[${marketSelect.options[marketSelect.selectedIndex].text}] Spot actuel : ${data.tick.quote}`, "#fff");
                 }
             }
 
-            // RÉCEPTION DES BARRIÈRES PROPOSÉES PAR LE SERVEUR
+            // RECEPTION ET CORRECTION DYNAMIQUE DES BARRIERES PAR LE SERVEUR
             if (data.msg_type === 'contracts_for' && data.contracts_for) {
                 serverLongBarriers = [];
                 serverShortBarriers = [];
-
                 const availableContracts = data.contracts_for.available || [];
                 
                 availableContracts.forEach(c => {
@@ -272,17 +249,15 @@
                     }
                 });
 
-                // Affichage dans le panneau pour l'utilisateur
-                if(serverLongBarriers.length > 0 || serverShortBarriers.length > 0) {
-                    barrierDisplay.innerHTML = `Longs : [${serverLongBarriers.join(', ')}] <br> Shorts : [${serverShortBarriers.join(', ')}]`;
-                } else {
-                    barrierDisplay.innerHTML = "Aucune barrière de Turbo active sur ce marché en ce moment.";
-                }
+                // Écriture explicite dans les logs pour que tu voies ce que propose le serveur
+                log(`[Serveur] Mise à jour des barrières pour les trades :`, "#ffea00");
+                log(`  ➔ TURBOLONG disponibles : [${serverLongBarriers.join(' | ')}]`, "#2e7d32");
+                log(`  ➔ TURBOSHORT disponibles : [${serverShortBarriers.join(' | ')}]`, "#c62828");
             }
 
-            // ACHAT EXÉCUTÉ VIA PROPOSAL DU SERVEUR
+            // GESTION DU RETOUR DU PROPOSAL -> ACHAT FINAL
             if (data.msg_type === 'proposal' && data.proposal) {
-                log(`Proposition acceptée ! Prime (Ask price) : ${data.proposal.ask_price}$`, "#00e676");
+                log(`[Proposal] Proposition validée ! Prime calculée : ${data.proposal.ask_price}$ (Mise : ${stakeInput.value}$)`, "#00e676");
                 ws.send(JSON.stringify({
                     buy: data.proposal.id,
                     price: data.proposal.ask_price,
@@ -293,10 +268,9 @@
             if (data.error) {
                 log(`❌ Erreur API : ${data.error.message}`, "#ff1744");
             } else if (data.msg_type === 'buy') {
-                log(`✅ Contrat validé ! ID : ${data.buy.contract_id}`, "#00e676");
+                log(`✅ Contrat validé avec succès ! ID : ${data.buy.contract_id}`, "#00e676");
                 log(`${data.buy.longcode}`, "#aaa");
-                // Rafraîchir les barrières après un trade
-                requestServerBarriers();
+                requestServerBarriers(); // Re-demande les barrières fraîches
             }
         };
 
@@ -306,10 +280,8 @@
         };
     }
 
-    // Demander au serveur les contrats et barrières disponibles pour le symbole actuel
     function requestServerBarriers() {
         if (ws && ws.readyState === WebSocket.OPEN) {
-            barrierDisplay.innerHTML = "Mise à jour des barrières serveurs...";
             ws.send(JSON.stringify({
                 contracts_for: currentSymbol,
                 req_id: 10
@@ -317,8 +289,8 @@
         }
     }
 
-    // --- ENVOI DE L'ORDRE AVEC LA BARRIÈRE SERVEUR AUTOMATIQUE ---
-    function triggerTurboProposal(direction) {
+    // --- ENVOI DE L'ORDRE AUX VRAIS TYPES SANS ERREUR DE SYNTAXE ---
+    function triggerTurboProposal(contractType) {
         if (!ws || ws.readyState !== WebSocket.OPEN) {
             log("Erreur : Le bot n'est pas connecté.", "#ff1744");
             return;
@@ -327,40 +299,39 @@
         const stake = parseFloat(stakeInput.value);
         let chosenBarrier = null;
 
-        // On prend automatiquement la première barrière valide retournée par le serveur de Deriv
-        if (direction === 'LONG') {
+        // Choix de la barrière retournée par Deriv selon le type exact
+        if (contractType === 'TURBOLONG') {
             if (serverLongBarriers.length === 0) {
-                log("Erreur : Le serveur ne propose aucune barrière Long actuellement. Réessayez.", "#ff1744");
+                log("Erreur : Aucune barrière TURBOLONG proposée par le serveur actuellement.", "#ff1744");
                 requestServerBarriers();
                 return;
             }
-            chosenBarrier = serverLongBarriers[0]; // Prend la barrière par défaut du serveur
-        } else {
+            chosenBarrier = serverLongBarriers[0]; 
+        } else if (contractType === 'TURBOSHORT') {
             if (serverShortBarriers.length === 0) {
-                log("Erreur : Le serveur ne propose aucune barrière Short actuellement. Réessayez.", "#ff1744");
+                log("Erreur : Aucune barrière TURBOSHORT proposée par le serveur actuellement.", "#ff1744");
                 requestServerBarriers();
                 return;
             }
-            chosenBarrier = serverShortBarriers[0]; // Prend la barrière par défaut du serveur
+            chosenBarrier = serverShortBarriers[0]; 
         }
 
-        const finalContractType = (direction === 'LONG') ? 'TURBOLONG' : 'TURBOSHORT';
-        log(`Achat demandé avec la barrière officielle du serveur : ${chosenBarrier}`, "#ffea00");
+        log(`[Trade] Requête envoyée pour ${contractType} | Barrière serveur choisie : ${chosenBarrier} | Mise : ${stake}$`, "#ffea00");
 
         ws.send(JSON.stringify({
             proposal: 1,
             amount: stake,
             basis: 'stake',
-            contract_type: finalContractType, 
+            contract_type: contractType, // TURBOLONG ou TURBOSHORT transmis proprement
             currency: 'USD',
-            barrier: chosenBarrier.toString(), // Envoi de la barrière valide imposée par Deriv
+            barrier: chosenBarrier.toString(),
             underlying_symbol: currentSymbol,
             req_id: 1
         }));
     }
 
-    btnLong.addEventListener('click', () => triggerTurboProposal('LONG'));
-    btnShort.addEventListener('click', () => triggerTurboProposal('SHORT'));
+    btnLong.addEventListener('click', () => triggerTurboProposal('TURBOLONG'));
+    btnShort.addEventListener('click', () => triggerTurboProposal('TURBOSHORT'));
 
     marketSelect.addEventListener('change', (e) => {
         if (ws && ws.readyState === WebSocket.OPEN) {
@@ -368,15 +339,13 @@
             currentSymbol = e.target.value;
             log(`Changement d'actif : ${marketSelect.options[marketSelect.selectedIndex].text}`, "#ffea00");
             ws.send(JSON.stringify({ ticks: currentSymbol }));
-            requestServerBarriers(); // Re-demande les barrières pour le nouvel index
+            requestServerBarriers(); 
         }
     });
 
-    accountSelect.addEventListener('change', (e) => {
-        switchAccountSession(e.target.value);
-    });
+    accountSelect.addEventListener('change', (e) => { switchAccountSession(e.target.value); });
 
-    // --- CORE DE L'APPLICATION ---
+    // --- DEMARRAGE & PKCE CONTEXT ---
     async function initBot() {
         logBox.innerHTML = "";
         const urlParams = new URLSearchParams(window.location.search);
@@ -396,7 +365,6 @@
                         redirect_uri: REDIRECT_URI
                     })
                 });
-
                 const tok = await resp.json();
                 if (tok.access_token) {
                     localStorage.setItem('access_token', tok.access_token);
