@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deriv Mini-Bot Turbos API v2</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #111; color: #fff; padding: 20px; }
+        .container { max-width: 600px; margin: auto; background: #1a1a1a; padding: 20px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+        h2 { color: #ff444f; border-bottom: 1px solid #333; padding-bottom: 10px; margin-top: 0; }
+        h3 { color: #ccc; margin-top: 20px; border-bottom: 1px solid #222; padding-bottom: 5px; }
+        .btn { background: #ff444f; color: white; border: none; padding: 10px 20px; font-size: 16px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        .btn:hover { background: #e03a44; }
+        .btn-logout { background: #555; margin-left: 10px; }
+        
+        /* Panneau de trading style DTrader */
+        .panel-trading { background: #222; padding: 15px; border-radius: 6px; margin-top: 15px; border: 1px solid #2a2a2a; }
+        .form-group { margin-bottom: 15px; display: flex; flex-direction: column; gap: 5px; }
+        label { font-size: 14px; color: #aaa; }
+        select, input[type="number"] { background: #2a2a2a; border: 1px solid #444; color: white; padding: 10px; border-radius: 4px; font-size: 15px; }
+        select:focus, input:focus { border-color: #ff444f; outline: none; }
+        
+        .trade-actions { display: flex; gap: 15px; margin-top: 15px; }
+        .btn-trade { flex: 1; padding: 15px; font-size: 18px; text-transform: uppercase; border: none; color: white; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        .btn-long { background: #2e7d32; }
+        .btn-long:hover { background: #1b5e20; }
+        .btn-short { background: #c62828; }
+        .btn-short:hover { background: #b71c1c; }
+
+        #log-box { background: #000; color: #0f0; padding: 15px; height: 300px; overflow-y: auto; font-family: monospace; border-radius: 4px; margin-top: 15px; font-size: 13px; border: 1px solid #333; }
+        .status { font-weight: bold; padding: 5px; display: inline-block; border-radius: 3px; }
+        .online { background: #2e7d32; }
+        .offline { background: #c62828; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Deriv Bot Turbos (API v2 Hybride REST/WS)</h2>
+    
+    <div>
+        <p>Statut WebSocket : <span id="status" class="status offline">Déconnecté</span></p>
+        <button id="auth-btn" class="btn">Se connecter avec Deriv</button>
+        <button id="logout-btn" class="btn btn-logout" style="display:none;">Déconnexion</button>
+    </div>
+
+    <div id="trading-panel" class="panel-trading" style="display: none;">
+        <h3>Configuration Turbos (Long / Short)</h3>
+        
+        <div class="form-group">
+            <label for="account-select">Sélection du Compte (Nomenclature DOT / ROT)</label>
+            <select id="account-select">
+                </select>
+        </div>
+
+        <div class="form-group">
+            <label for="market-select">Marché / Indice de Volatilité</label>
+            <select id="market-select">
+                <option value="R_10">Volatility 10 Index</option>
+                <option value="R_25">Volatility 25 Index</option>
+                <option value="R_50">Volatility 50 Index</option>
+                <option value="R_75">Volatility 75 Index</option>
+                <option value="R_100">Volatility 100 Index</option>
+                <option value="1HZ10V">Volatility 10 (1s) Index</option>
+                <option value="1HZ25V" selected>Volatility 25 (1s) Index</option>
+                <option value="1HZ50V">Volatility 50 (1s) Index</option>
+                <option value="1HZ75V">Volatility 75 (1s) Index</option>
+                <option value="1HZ100V">Volatility 100 (1s) Index</option>
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label for="trade-barrier">Barrière (Offset / Distance)</label>
+            <input type="number" id="trade-barrier" value="10.50" step="0.1" min="0.01">
+        </div>
+
+        <div class="form-group">
+            <label for="trade-stake">Stake ($)</label>
+            <input type="number" id="trade-stake" value="1.00" step="0.5" min="0.35">
+        </div>
+
+        <div class="trade-actions">
+            <button id="btn-long" class="btn-trade btn-long">▲ Turbo Long</button>
+            <button id="btn-short" class="btn-trade btn-short">▼ Turbo Short</button>
+        </div>
+    </div>
+
+    <h3>Flux de Marché & Logs d'exécution</h3>
+    <div id="log-box">Initialisation du système...</div>
+</div>
+
+<script>
+    const CLIENT_ID = '33wQvUCQCGhOHXHJACSpO'; 
+    const REDIRECT_URI = 'https://demelakoutou-debug.github.io/essaindex/'; 
+
+    const authBtn = document.getElementById('auth-btn');
+    const logoutBtn = document.getElementById('logout-btn');
+    const tradingPanel = document.getElementById('trading-panel');
+    const accountSelect = document.getElementById('account-select');
+    const marketSelect = document.getElementById('market-select');
+    const barrierInput = document.getElementById('trade-barrier');
+    const stakeInput = document.getElementById('trade-stake');
+    const btnLong = document.getElementById('btn-long');
+    const btnShort = document.getElementById('btn-short');
+    const statusEl = document.getElementById('status');
+    const logBox = document.getElementById('log-box');
+
+    let ws = null;
+    let accessToken = null;
+    let currentSymbol = '1HZ25V';
+
+    function log(msg, color = '#0f0') {
+        const time = new Date().toLocaleTimeString();
+        logBox.innerHTML += `<div style="color: ${color}">[${time}] ${msg}</div>`;
+        logBox.scrollTop = logBox.scrollHeight;
+    }
+
+    // --- OUTILS SÉCURITÉ PKCE ---
+    function generateRandomString(length) {
+        const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+        let text = '';
+        for (let i = 0; i < length; i++) {
+            text += possible.charAt(Math.floor(Math.random() * possible.length));
+        }
+        return text;
+    }
+
+    async function generateCodeChallenge(codeVerifier) {
+        const encoder = new TextEncoder();
+        const data = encoder.encode(codeVerifier);
+        const digest = await window.crypto.subtle.digest('SHA-256', data);
+        return btoa(String.fromCharCode(...new Uint8Array(digest)))
+            .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+
+    authBtn.addEventListener('click', async () => {
+        const state = generateRandomString(16);
+        const codeVerifier = generateRandomString(64);
+        const codeChallenge = await generateCodeChallenge(codeVerifier);
+
+        sessionStorage.setItem('oauth_state', state);
+        sessionStorage.setItem('oauth_verifier', codeVerifier);
+
+        const scope = 'trade';
+        const oauthUrl = `https://auth.deriv.com/oauth2/auth` + 
+                         `?response_type=code` +
+                         `&client_id=${CLIENT_ID}` +
+                         `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
+                         `&scope=${scope}` +
+                         `&state=${state}` +
+                         `&code_challenge=${codeChallenge}` +
+                         `&code_challenge_method=S256`;
+
+        log("Redirection vers la mire d'autorisation officielle...", "#ffea00");
+        window.location.href = oauthUrl;
+    });
+
+    logoutBtn.addEventListener('click', () => {
+        sessionStorage.clear();
+        localStorage.clear();
+        window.location.href = REDIRECT_URI;
+    });
+
+    // --- INTERFACE REST v2 COMPTES ---
+    async function fetchDerivAccounts() {
+        log("Récupération de la liste des comptes de trading via l'API REST...", "#ffea00");
+        try {
+            const response = await fetch('https://api.derivws.com/trading/v1/options/accounts', {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                    'Deriv-App-ID': CLIENT_ID
+                }
+            });
+
+            if (!response.ok) throw new Error(`Erreur HTTP : ${response.status}`);
+
+            const json = await response.json();
+            const accounts = json.data || []; 
+            accountSelect.innerHTML = "";
+
+            if (accounts.length === 0) {
+                log("Aucun compte actif trouvé. Création du compte démo...", "#ffea00");
+                await createDerivAccount('demo');
+                return fetchDerivAccounts(); 
+            }
+
+            accounts.forEach(acc => {
+                const option = document.createElement('option');
+                option.value = acc.account_id; 
+                let label = acc.account_type === 'demo' ? "Démo (DOT)" : "Réel (ROT)";
+                option.text = `${label} - ${acc.account_id} (${acc.currency || 'USD'})`;
+                accountSelect.appendChild(option);
+            });
+
+            tradingPanel.style.display = 'block';
+
+            if(accountSelect.value) {
+                switchAccountSession(accountSelect.value);
+            }
+
+        } catch (error) {
+            log(`Impossible de récupérer vos comptes : ${error.message}`, "#ff1744");
+        }
+    }
+
+    async function createDerivAccount(type) {
+        try {
+            await fetch('https://api.derivws.com/trading/v1/options/accounts', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                    'Deriv-App-ID': CLIENT_ID,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ currency: "USD", group: "row", account_type: type })
+            });
+        } catch(e) {
+            console.error("Erreur création compte", e);
+        }
+    }
+
+    // --- APPEL OTP v2 ET DÉPLOYAGE WS ---
+    async function switchAccountSession(accountId) {
+        if (ws) {
+            log("Fermeture de la session précédente...", "#aaa");
+            ws.close();
+        }
+
+        log(`Demande d'un OTP pour le compte ${accountId}...`, "#ffea00");
+
+        try {
+            const response = await fetch(`https://api.derivws.com/trading/v1/options/accounts/${accountId}/otp`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                    'Deriv-App-ID': CLIENT_ID
+                }
+            });
+
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                throw new Error(errData.error?.message || `Erreur HTTP ${response.status}`);
+            }
+
+            const otpData = await response.json();
+            const wsUrl = otpData.data?.url; 
+
+            if (wsUrl) {
+                log("OTP validé. Connexion au canal sécurisé v2...", "#00e676");
+                openAuthenticatedWebSocket(wsUrl);
+            } else {
+                throw new Error("L'API n'a renvoyé aucune URL valide.");
+            }
+
+        } catch (error) {
+            log(`Échec du rafraîchissement (OTP) : ${error.message}`, "#ff1744");
+        }
+    }
+
+    function openAuthenticatedWebSocket(wsUrl) {
+        ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+            statusEl.className = "status online";
+            statusEl.innerText = "En ligne (Sécurisé)";
+            log(`WebSocket connectée ! Flux ouvert sur : ${marketSelect.options[marketSelect.selectedIndex].text}`, "#00e676");
+
+            currentSymbol = marketSelect.value;
+            ws.send(JSON.stringify({ ticks: currentSymbol }));
+        };
+
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+
+            if (data.msg_type === 'tick' && data.tick && data.tick.symbol === currentSymbol) {
+                if (Math.random() > 0.8) { 
+                    log(`[${marketSelect.options[marketSelect.selectedIndex].text}] Spot : ${data.tick.quote}`, "#fff");
+                }
+            }
+
+            // FLUX DE COMMANDE TURBO v2 (PROPOSAL -> BUY)
+            if (data.msg_type === 'proposal' && data.proposal) {
+                log(`Proposition reçue ! Prix de l'option : ${data.proposal.ask_price}$`, "#ffea00");
+                log("Envoi de l'ordre d'achat au marché...", "#ffea00");
+                
+                ws.send(JSON.stringify({
+                    buy: data.proposal.id,
+                    price: data.proposal.ask_price,
+                    req_id: 2
+                }));
+            }
+
+            if (data.msg_type === 'buy') {
+                if (data.error) {
+                    log(`❌ Échec de la transaction Turbos : ${data.error.message}`, "#ff1744");
+                } else {
+                    log(`✅ Contrat Turbo exécuté ! ID : ${data.buy.contract_id}`, "#00e676");
+                    log(`${data.buy.longcode}`, "#aaa");
+                }
+            }
+        };
+
+        ws.onerror = (error) => {
+            log("Erreur de transmission sur la WebSocket.", "#ff1744");
+        };
+
+        ws.onclose = () => {
+            statusEl.className = "status offline";
+            statusEl.innerText = "Déconnecté";
+            log("Fermeture du canal WebSocket.", "#ff1744");
+        };
+    }
+
+    // --- PROCESSUS DE COMMANDE TURBO LONG / SHORT ---
+    function triggerTurboProposal(direction) {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+            log("Erreur : Le bot n'est pas connecté.", "#ff1744");
+            return;
+        }
+
+        const stake = parseFloat(stakeInput.value);
+        const barrierValue = parseFloat(barrierInput.value);
+        
+        // Types de contrats de l'API Deriv v2 pour les Turbos : 'TURBOLONG' ou 'TURBOSHORT'
+        const finalContractType = (direction === 'LONG') ? 'TURBOLONG' : 'TURBOSHORT';
+
+        log(`Étape 1 : Demande de cotation [${finalContractType}] (Barrière: ${barrierValue}) sur ${currentSymbol}...`, "#aaa");
+
+        ws.send(JSON.stringify({
+            proposal: 1,
+            amount: stake,
+            basis: 'stake',
+            contract_type: finalContractType, 
+            currency: 'USD',
+            barrier: barrierValue.toString(), // La barrière doit être transmise sous forme de chaîne de caractères
+            underlying_symbol: currentSymbol,
+            req_id: 1
+        }));
+    }
+
+    btnLong.addEventListener('click', () => triggerTurboProposal('LONG'));
+    btnShort.addEventListener('click', () => triggerTurboProposal('SHORT'));
+
+    // --- MISE À JOUR COMMUTATIONS UI ---
+    marketSelect.addEventListener('change', (e) => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            log(`Désabonnement du flux précédent...`, "#aaa");
+            ws.send(JSON.stringify({ forget_all: 'ticks' }));
+            currentSymbol = e.target.value;
+            log(`Changement d'actif vers : ${marketSelect.options[marketSelect.selectedIndex].text}`, "#ffea00");
+            ws.send(JSON.stringify({ ticks: currentSymbol }));
+        }
+    });
+
+    accountSelect.addEventListener('change', (e) => {
+        switchAccountSession(e.target.value);
+    });
+
+    // --- CHARGEMENT DU CORE ET PKCE EXCHANGE ---
+    async function initBot() {
+        logBox.innerHTML = "";
+        const urlParams = new URLSearchParams(window.location.search);
+        const code = urlParams.get('code');
+        const state = urlParams.get('state');
+
+        if (code && state) {
+            const savedState = sessionStorage.getItem('oauth_state');
+            if (state !== savedState) {
+                log("Échec : Le paramètre state ne correspond pas.", "#ff1744");
+                return;
+            }
+            
+            log("Code reçu. Échange contre un vrai Access Token en cours...", "#ffea00");
+            try {
+                const resp = await fetch('https://auth.deriv.com/oauth2/token', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({
+                        grant_type: 'authorization_code',
+                        client_id: CLIENT_ID,
+                        code: code,
+                        code_verifier: sessionStorage.getItem('oauth_verifier'),
+                        redirect_uri: REDIRECT_URI
+                    })
+                });
+
+                if (!resp.ok) throw new Error("Échec du serveur d'authentification Token.");
+
+                const tok = await resp.json();
+                if (tok.access_token) {
+                    log("Token Bearer officiel généré et stocké avec succès !", "#00e676");
+                    localStorage.setItem('access_token', tok.access_token);
+                    localStorage.setItem('is_logged', 'true');
+                }
+            } catch(err) {
+                log(`Erreur critique lors de l'échange de token : ${err.message}`, "#ff1744");
+            }
+            window.history.replaceState({}, document.title, REDIRECT_URI);
+        }
+
+        if (localStorage.getItem('is_logged') === 'true') {
+            accessToken = localStorage.getItem('access_token');
+            authBtn.style.display = 'none';
+            logoutBtn.style.display = 'inline-block';
+            fetchDerivAccounts();
+        } else {
+            log("Prêt. Veuillez vous connecter pour valider l'accès à l'application Turbos.", "#fff");
+        }
+    }
+
+    initBot();
+</script>
+
+</body>
+</html>
