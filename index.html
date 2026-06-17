@@ -13,7 +13,6 @@
         .btn:hover { background: #e03a44; }
         .btn-logout { background: #555; margin-left: 10px; }
         
-        /* Panneau de trading style DTrader */
         .panel-trading { background: #222; padding: 15px; border-radius: 6px; margin-top: 15px; border: 1px solid #2a2a2a; }
         .form-group { margin-bottom: 15px; display: flex; flex-direction: column; gap: 5px; }
         label { font-size: 14px; color: #aaa; }
@@ -45,7 +44,7 @@
     </div>
 
     <div id="trading-panel" class="panel-trading" style="display: none;">
-        <h3>Configuration Turbos (Long / Short)</h3>
+        <h3>Configuration Turbos (Calcul Dynamique)</h3>
         
         <div class="form-group">
             <label for="account-select">Sélection du Compte (Nomenclature DOT / ROT)</label>
@@ -70,8 +69,8 @@
         </div>
 
         <div class="form-group">
-            <label for="trade-barrier">Barrière (Offset / Distance)</label>
-            <input type="number" id="trade-barrier" value="10.50" step="0.1" min="0.01">
+            <label for="trade-offset">Distance de la Barrière (Offset)</label>
+            <input type="number" id="trade-offset" value="10.50" step="0.1" min="0.01">
         </div>
 
         <div class="form-group">
@@ -98,7 +97,7 @@
     const tradingPanel = document.getElementById('trading-panel');
     const accountSelect = document.getElementById('account-select');
     const marketSelect = document.getElementById('market-select');
-    const barrierInput = document.getElementById('trade-barrier');
+    const offsetInput = document.getElementById('trade-offset');
     const stakeInput = document.getElementById('trade-stake');
     const btnLong = document.getElementById('btn-long');
     const btnShort = document.getElementById('btn-short');
@@ -108,6 +107,7 @@
     let ws = null;
     let accessToken = null;
     let currentSymbol = '1HZ25V';
+    let lastSpotPrice = null; // Stockage en temps réel du dernier prix du marché
 
     function log(msg, color = '#0f0') {
         const time = new Date().toLocaleTimeString();
@@ -274,15 +274,16 @@
             const data = JSON.parse(event.data);
 
             if (data.msg_type === 'tick' && data.tick && data.tick.symbol === currentSymbol) {
-                if (Math.random() > 0.8) { 
-                    log(`[${marketSelect.options[marketSelect.selectedIndex].text}] Spot : ${data.tick.quote}`, "#fff");
+                lastSpotPrice = parseFloat(data.tick.quote); // Sauvegarde continue du prix spot exact
+                if (Math.random() > 0.85) { 
+                    log(`[${marketSelect.options[marketSelect.selectedIndex].text}] Spot : ${lastSpotPrice}`, "#fff");
                 }
             }
 
-            // FLUX DE COMMANDE TURBO v2 (PROPOSAL -> BUY)
+            // GESTION DU RETOUR DU PROPOSAL
             if (data.msg_type === 'proposal' && data.proposal) {
-                log(`Proposition reçue ! Prix de l'option : ${data.proposal.ask_price}$`, "#ffea00");
-                log("Envoi de l'ordre d'achat au marché...", "#ffea00");
+                log(`Proposition acceptée ! Prime (Ask price) calculée : ${data.proposal.ask_price}$`, "#00e676");
+                log("Achat du contrat Turbo en cours...", "#ffea00");
                 
                 ws.send(JSON.stringify({
                     buy: data.proposal.id,
@@ -291,13 +292,12 @@
                 }));
             }
 
-            if (data.msg_type === 'buy') {
-                if (data.error) {
-                    log(`❌ Échec de la transaction Turbos : ${data.error.message}`, "#ff1744");
-                } else {
-                    log(`✅ Contrat Turbo exécuté ! ID : ${data.buy.contract_id}`, "#00e676");
-                    log(`${data.buy.longcode}`, "#aaa");
-                }
+            // RÉCEPTION DES ERREURS OU DE LA CONFIRMATION D'ACHAT
+            if (data.error) {
+                log(`❌ Erreur API : ${data.error.message}`, "#ff1744");
+            } else if (data.msg_type === 'buy') {
+                log(`✅ Contrat Turbo exécuté avec succès ! ID : ${data.buy.contract_id}`, "#00e676");
+                log(`${data.buy.longcode}`, "#aaa");
             }
         };
 
@@ -312,20 +312,36 @@
         };
     }
 
-    // --- PROCESSUS DE COMMANDE TURBO LONG / SHORT ---
+    // --- PROPOSAL TURBO AVEC CALCUL DYNAMIQUE DE LA BARRIÈRE ABSOLUE ---
     function triggerTurboProposal(direction) {
         if (!ws || ws.readyState !== WebSocket.OPEN) {
             log("Erreur : Le bot n'est pas connecté.", "#ff1744");
             return;
         }
 
+        if (!lastSpotPrice) {
+            log("Erreur : En attente du premier prix du marché pour calculer la barrière...", "#ff1744");
+            return;
+        }
+
         const stake = parseFloat(stakeInput.value);
-        const barrierValue = parseFloat(barrierInput.value);
-        
-        // Types de contrats de l'API Deriv v2 pour les Turbos : 'TURBOLONG' ou 'TURBOSHORT'
+        const offset = parseFloat(offsetInput.value);
+        let absoluteBarrier;
+
+        // Pour TURBOLONG : La barrière de désactivation se trouve SOUS le prix actuel (Spot - Offset)
+        // Pour TURBOSHORT : La barrière de désactivation se trouve AU-DESSUS le prix actuel (Spot + Offset)
+        if (direction === 'LONG') {
+            absoluteBarrier = lastSpotPrice - offset;
+        } else {
+            absoluteBarrier = lastSpotPrice + offset;
+        }
+
+        // Arrondir la barrière selon le format attendu par Deriv (ex: 2 ou 4 décimales selon l'indice)
+        const formattedBarrier = absoluteBarrier.toFixed(4);
         const finalContractType = (direction === 'LONG') ? 'TURBOLONG' : 'TURBOSHORT';
 
-        log(`Étape 1 : Demande de cotation [${finalContractType}] (Barrière: ${barrierValue}) sur ${currentSymbol}...`, "#aaa");
+        log(`Calcul de la barrière : ${formattedBarrier} (Spot: ${lastSpotPrice} | Offset: ${direction === 'LONG' ? '-' : '+'}${offset})`, "#aaa");
+        log(`Étape 1 : Demande de proposition [${finalContractType}]...`, "#ffea00");
 
         ws.send(JSON.stringify({
             proposal: 1,
@@ -333,7 +349,7 @@
             basis: 'stake',
             contract_type: finalContractType, 
             currency: 'USD',
-            barrier: barrierValue.toString(), // La barrière doit être transmise sous forme de chaîne de caractères
+            barrier: formattedBarrier, // Transmission de la barrière absolue calculée dynamiquement au serveur
             underlying_symbol: currentSymbol,
             req_id: 1
         }));
@@ -342,10 +358,10 @@
     btnLong.addEventListener('click', () => triggerTurboProposal('LONG'));
     btnShort.addEventListener('click', () => triggerTurboProposal('SHORT'));
 
-    // --- MISE À JOUR COMMUTATIONS UI ---
     marketSelect.addEventListener('change', (e) => {
         if (ws && ws.readyState === WebSocket.OPEN) {
             log(`Désabonnement du flux précédent...`, "#aaa");
+            lastSpotPrice = null; // Réinitialisation du prix spot pour le nouvel actif
             ws.send(JSON.stringify({ forget_all: 'ticks' }));
             currentSymbol = e.target.value;
             log(`Changement d'actif vers : ${marketSelect.options[marketSelect.selectedIndex].text}`, "#ffea00");
@@ -357,7 +373,7 @@
         switchAccountSession(e.target.value);
     });
 
-    // --- CHARGEMENT DU CORE ET PKCE EXCHANGE ---
+    // --- CORPS INITIAL ET ÉCHANGE DES CODES (PKCE) ---
     async function initBot() {
         logBox.innerHTML = "";
         const urlParams = new URLSearchParams(window.location.search);
