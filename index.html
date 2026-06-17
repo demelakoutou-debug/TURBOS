@@ -15,6 +15,8 @@
         
         .panel-trading { background: #222; padding: 15px; border-radius: 6px; margin-top: 15px; border: 1px solid #2a2a2a; }
         .form-group { margin-bottom: 15px; display: flex; flex-direction: column; gap: 5px; }
+        .form-row { display: flex; gap: 10px; }
+        .form-row > div { flex: 1; display: flex; flex-direction: column; gap: 5px; }
         label { font-size: 14px; color: #aaa; }
         select, input[type="number"], input[type="text"] { background: #2a2a2a; border: 1px solid #444; color: white; padding: 10px; border-radius: 4px; font-size: 15px; }
         select:focus, input:focus { border-color: #ff444f; outline: none; }
@@ -68,6 +70,21 @@
             </select>
         </div>
 
+        <div class="form-row" style="margin-bottom: 15px;">
+            <div>
+                <label for="duration-unit">Unité de durée</label>
+                <select id="duration-unit">
+                    <option value="t" selected>Ticks</option>
+                    <option value="s">Secondes</option>
+                    <option value="m">Minutes</option>
+                </select>
+            </div>
+            <div>
+                <label for="duration-value">Valeur durée</label>
+                <input type="number" id="duration-value" value="5" min="1">
+            </div>
+        </div>
+
         <div class="form-group">
             <label for="trade-barrier">Barrière Personnalisée (Valeur absolue ou Offset)</label>
             <input type="text" id="trade-barrier" value="10.50">
@@ -97,6 +114,8 @@
     const tradingPanel = document.getElementById('trading-panel');
     const accountSelect = document.getElementById('account-select');
     const marketSelect = document.getElementById('market-select');
+    const durationUnitSelect = document.getElementById('duration-unit');
+    const durationValueInput = document.getElementById('duration-value');
     const barrierInput = document.getElementById('trade-barrier');
     const stakeInput = document.getElementById('trade-stake');
     const btnLong = document.getElementById('btn-long');
@@ -219,11 +238,7 @@
             statusEl.className = "status online";
             statusEl.innerText = "En ligne (Sécurisé)";
             currentSymbol = marketSelect.value;
-            
-            // Lancer l'écouteur du prix
             ws.send(JSON.stringify({ ticks: currentSymbol }));
-            
-            // Optionnel : On écoute les propositions génériques du serveur
             requestServerBarriers();
         };
 
@@ -236,7 +251,6 @@
                 }
             }
 
-            // Correction et suggestions automatique du serveur imprimées dans les logs
             if (data.msg_type === 'contracts_for' && data.contracts_for) {
                 const availableContracts = data.contracts_for.available || [];
                 log(`[Serveur] Données indicatives de barrières reçues pour information.`, "#ffea00");
@@ -250,9 +264,8 @@
                 });
             }
 
-            // GESTION DU PROPOSAL ET EXÉCUTION DU TRADE
             if (data.msg_type === 'proposal' && data.proposal) {
-                log(`[Proposal] Proposition validée par Deriv. Prix de l'option : ${data.proposal.ask_price}$`, "#00e676");
+                log(`[Proposal] Proposition validée ! Prix de l'option : ${data.proposal.ask_price}$`, "#00e676");
                 ws.send(JSON.stringify({
                     buy: data.proposal.id,
                     price: data.proposal.ask_price,
@@ -283,7 +296,7 @@
         }
     }
 
-    // --- ENVOI DE LA COMMANDE AVEC TES TYPES EXACTS ET LA BARRIÈRE DU CHAMP ---
+    // --- ENVOI DU TRADE AVEC PRISE EN COMPTE DES DURÉES PERSONNALISÉES ---
     function triggerTurboProposal(contractType) {
         if (!ws || ws.readyState !== WebSocket.OPEN) {
             log("Erreur : Le bot n'est pas connecté.", "#ff1744");
@@ -292,22 +305,30 @@
 
         const stake = parseFloat(stakeInput.value);
         const customBarrier = barrierInput.value.trim();
+        const durationValue = parseInt(durationValueInput.value);
+        const durationUnit = durationUnitSelect.value;
 
         if (!customBarrier) {
             log("Erreur : Veuillez renseigner une valeur de barrière.", "#ff1744");
             return;
         }
+        
+        if (isNaN(durationValue) || durationValue < 1) {
+            log("Erreur : Durée invalide.", "#ff1744");
+            return;
+        }
 
-        // Application stricte de TURBOSLONG et TURBOSSHORT avec la barrière que TU as personnalisée
-        log(`[Trade] Envoi de la demande | Type: ${contractType} | Barrière : ${customBarrier} | Stake : ${stake}$`, "#ffea00");
+        log(`[Trade] Envoi de la demande | Type: ${contractType} | Durée : ${durationValue}${durationUnit} | Barrière : ${customBarrier} | Stake : ${stake}$`, "#ffea00");
 
         ws.send(JSON.stringify({
             proposal: 1,
             amount: stake,
             basis: 'stake',
-            contract_type: contractType, // TURBOSLONG ou TURBOSSHORT transmis ici
+            contract_type: contractType, 
             currency: 'USD',
-            barrier: customBarrier, // Ta valeur personnalisée du champ
+            duration: durationValue,          // Nombre de Ticks, Sec, ou Min saisi
+            duration_unit: durationUnit,    // 't', 's', ou 'm'
+            barrier: customBarrier, 
             underlying_symbol: currentSymbol,
             req_id: 1
         }));
@@ -328,7 +349,7 @@
 
     accountSelect.addEventListener('change', (e) => { switchAccountSession(e.target.value); });
 
-    // --- CHARGEMENT DU BOOTSTRAP ET TOKEN EXCHANGE ---
+    // --- CHARGEMENT CONTEXTUEL ---
     async function initBot() {
         logBox.innerHTML = "";
         const urlParams = new URLSearchParams(window.location.search);
